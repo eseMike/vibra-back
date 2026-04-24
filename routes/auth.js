@@ -4,7 +4,7 @@ import User from '../models/User.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 
-const authMiddleware = (req, res, next) => {
+export const authMiddleware = (req, res, next) => {
    const authHeader = req.headers.authorization;
 
    if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -22,9 +22,18 @@ const authMiddleware = (req, res, next) => {
    }
 };
 
+export const requireRole = (role) => {
+   return (req, res, next) => {
+      if (!req.user || req.user.role !== role) {
+         return res.status(403).json({message: 'Acceso denegado por rol'});
+      }
+      next();
+   };
+};
+
 router.post('/register', async (req, res) => {
    console.log('REQ BODY:', req.body);
-   const {email, password} = req.body;
+   const {email, password, role} = req.body;
 
    if (!email || !password) {
       return res.status(400).json({message: 'Todos los campos son obligatorios'});
@@ -39,15 +48,32 @@ router.post('/register', async (req, res) => {
 
       const hashedPassword = await bcrypt.hash(password, 10);
 
+      console.log('CREATING USER WITH ROLE:', role);
       const newUser = new User({
-         name: 'Nuevo usuario',
+         name: req.body.publicName || 'Nuevo usuario',
          email,
          password: hashedPassword,
+         role: role === 'creator' ? 'creator' : 'user',
       });
 
       await newUser.save();
 
-      res.status(201).json({message: 'Usuario creado correctamente'});
+      const token = jwt.sign(
+         {userId: newUser._id, email: newUser.email, role: newUser.role},
+         process.env.JWT_SECRET || 'vibra-secret-dev',
+         {expiresIn: '7d'}
+      );
+
+      res.status(201).json({
+         message: 'Usuario creado correctamente',
+         token,
+         user: {
+            id: newUser._id,
+            email: newUser.email,
+            role: newUser.role,
+            isPremium: newUser.isPremium,
+         },
+      });
    } catch (err) {
       res.status(500).json({message: 'Error al registrar usuario', err});
    }
@@ -73,7 +99,7 @@ router.post('/login', async (req, res) => {
       }
 
       const token = jwt.sign(
-         {userId: user._id, email: user.email},
+         {userId: user._id, email: user.email, role: user.role},
          process.env.JWT_SECRET || 'vibra-secret-dev',
          {expiresIn: '7d'}
       );
@@ -125,6 +151,50 @@ router.post('/activate-premium', authMiddleware, async (req, res) => {
    } catch (err) {
       res.status(500).json({message: 'Error al activar premium', err});
    }
+});
+
+router.post('/become-creator', authMiddleware, async (req, res) => {
+   try {
+      const user = await User.findById(req.user.userId);
+
+      if (!user) {
+         return res.status(404).json({message: 'Usuario no encontrado'});
+      }
+
+      if (user.role === 'creator') {
+         return res.status(400).json({message: 'Ya eres creador'});
+      }
+
+      user.role = 'creator';
+      await user.save();
+
+      // generar nuevo token con rol actualizado
+      const token = jwt.sign(
+         {userId: user._id, email: user.email, role: user.role},
+         process.env.JWT_SECRET || 'vibra-secret-dev',
+         {expiresIn: '7d'}
+      );
+
+      res.json({
+         message: 'Ahora eres creador 🎬',
+         token,
+         user: {
+            id: user._id,
+            email: user.email,
+            role: user.role,
+            isPremium: user.isPremium,
+         },
+      });
+   } catch (err) {
+      res.status(500).json({message: 'Error al convertir en creador', err});
+   }
+});
+
+router.get('/creator-only', authMiddleware, requireRole('creator'), (req, res) => {
+   res.json({
+      message: 'Bienvenido creador 🎬',
+      user: req.user,
+   });
 });
 
 export default router;
